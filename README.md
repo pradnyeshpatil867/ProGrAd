@@ -1,4 +1,4 @@
-# ProGrAd — Enterprise Agentic RAG
+# ProGrAd RAG — Production Grade Advanced RAG
 
 A guardrailed, agentic Retrieval-Augmented Generation (RAG) API for enterprise IT documentation, scoped to **Kubernetes, Intel hardware, and enterprise networking**. Built with FastAPI, LangGraph, NeMo Guardrails, Qdrant, and Groq.
 
