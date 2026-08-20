@@ -24,16 +24,16 @@ A user question is (1) screened by NeMo Guardrails for off-topic/jailbreak inten
                 blocked │ clean
               ◄─────────┤
                         ▼
-              ┌─────────────────────────────────────────────┐                            
-              │   LangGraph RAG                             │  app/agents/graph.py
-              │      Agent                                  │
-              │                                             │
-              │   planner ──┬──► retriever ──► responder    │
-              │   (intent)  │    (Qdrant +      (Groq LLM)  │
-              │             │     FlashRank)         │      │
-              │             └────────────────────────┘      │
-              │        (conversational path skips retrieval)│
-              └─────────────────────────────────────────────┘
+              ┌───────────────────────────────────────────────┐                            
+              │   LangGraph RAG                               │  app/agents/graph.py
+              │      Agent                                    │
+              │                                               │
+              │   planner ──┬──► retriever ──► responder      │
+              │   (intent)  │    (Qdrant +      (Groq LLM)    │
+              │             │     FlashRank)         │        │
+              │             └────────────────────────┘        │
+              │        (conversational path skips retrieval)  │
+              └───────────────────────────────────────────────┘
 ```
 
 - **Guardrail gate** ([app/guardrails](app/guardrails)) — NeMo Guardrails, embedding-similarity intent matching against example utterances, backed by a Groq LLM for anything that doesn't match a known pattern.
