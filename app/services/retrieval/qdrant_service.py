@@ -1,9 +1,9 @@
 import logfire
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from app.config import settings
+from app.config import settings, DENSE_VECTOR_NAME, SPARSE_VECTOR_NAME
 from app.services.retrieval.embeddings import embed_query
-
+from app.services.retrieval.sparse_embeddings import embed_query_sparse
 
 # Initialize Qdrant Client
 client = QdrantClient(
@@ -13,18 +13,31 @@ client = QdrantClient(
 
 def search_enterprise_knowledge(query: str, limit: int = 8):
     """
-    Performs a high-precision search in the enterprise knowledge base.
-    Uses the modern query_points interface.
+    Hybrid search: fuses dense (semantic) and BM25 sparse (lexical) candidates
+    with Reciprocal Rank Fusion, so exact keyword matches (error codes, flag
+    names, resource kinds) surface even when they're not embedding-similar.
     """
     try:
-        query_vector = embed_query(query)
+        dense_vector = embed_query(query)
+        sparse_vector = embed_query_sparse(query)
 
-        # Using query_points - the modern standard for Qdrant
+        # Overfetch on each branch so RRF has enough candidates to fuse from
+        # before trimming down to `limit`.
+        prefetch_limit = limit * 3
+
         response = client.query_points(
             collection_name=settings.QDRANT_COLLECTION,
-            query=query_vector,
+            prefetch=[
+                models.Prefetch(
+                    query=dense_vector, using=DENSE_VECTOR_NAME, limit=prefetch_limit
+                ),
+                models.Prefetch(
+                    query=sparse_vector, using=SPARSE_VECTOR_NAME, limit=prefetch_limit
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
             limit=limit,
-            with_payload=True # JSON
+            with_payload=True,
         )
 
         results = []
@@ -34,7 +47,7 @@ def search_enterprise_knowledge(query: str, limit: int = 8):
                 "source": res.payload.get("source", "Unknown"),
                 "score": res.score
             })
-        
+
         return results
     except Exception as e:
         logfire.error(f"❌ Qdrant Search Failed: {e}")

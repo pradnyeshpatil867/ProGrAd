@@ -14,4 +14,8 @@ class Settings:
     GRPQ_FALLBACK_API_KEY = os.getenv("GROQ_FALLBACK_API_KEY")
 
 settings = Settings()
-    
+
+# Named-vector keys for the hybrid (dense + BM25 sparse) Qdrant collection
+# schema. Shared between ingestion (writes both) and retrieval (queries both).
+DENSE_VECTOR_NAME = "dense"
+SPARSE_VECTOR_NAME = "sparse"

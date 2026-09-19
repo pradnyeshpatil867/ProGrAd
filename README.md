@@ -2,7 +2,7 @@
 
 A guardrailed, agentic Retrieval-Augmented Generation (RAG) API for enterprise IT documentation, scoped to **Kubernetes, Intel hardware, and enterprise networking**. Built with FastAPI, LangGraph, NeMo Guardrails, Qdrant, and Groq.
 
-A user question is (1) screened by NeMo Guardrails for off-topic/jailbreak intent, (2) routed by a LangGraph planner to either a direct conversational answer or a retrieval pipeline (Qdrant vector search → FlashRank cross-encoder rerank), and (3) synthesized into a final answer — all traced end-to-end with Pydantic Logfire.
+A user question is (1) screened by NeMo Guardrails for off-topic/jailbreak intent, (2) routed by a LangGraph planner to either a direct conversational answer or a retrieval pipeline (Qdrant hybrid search — dense + BM25 sparse, RRF-fused — → FlashRank cross-encoder rerank), and (3) synthesized into a final answer — all traced end-to-end with Pydantic Logfire.
 
 ## Architecture
 
@@ -29,7 +29,7 @@ A user question is (1) screened by NeMo Guardrails for off-topic/jailbreak inten
               │      Agent                                    │
               │                                               │
               │   planner ──┬──► retriever ──► responder      │
-              │   (intent)  │    (Qdrant +      (Groq LLM)    │
+              │   (intent)  │    (Hybrid +      (Groq LLM)    │
               │             │     FlashRank)         │        │
               │             └────────────────────────┘        │
               │        (conversational path skips retrieval)  │
@@ -38,7 +38,7 @@ A user question is (1) screened by NeMo Guardrails for off-topic/jailbreak inten
 
 - **Guardrail gate** ([app/guardrails](app/guardrails)) — NeMo Guardrails, embedding-similarity intent matching against example utterances, backed by a Groq LLM for anything that doesn't match a known pattern.
 - **Planner** ([planner.py](app/agents/nodes/planner.py)) — classifies the query as `CONVERSATIONAL` (answerable from chat history / greeting) or technical, producing a refined search query for the latter.
-- **Retriever** ([retriever.py](app/agents/nodes/retriever.py)) — embeds the query, searches Qdrant for 15 candidates, reranks with FlashRank's local cross-encoder, keeps the top 5.
+- **Retriever** ([retriever.py](app/agents/nodes/retriever.py)) — hybrid search against Qdrant: dense (Gemini/sentence-transformers) semantic similarity and BM25 sparse (lexical) candidates fused with Reciprocal Rank Fusion, 15 fused candidates, reranked with FlashRank's local cross-encoder down to the top 5. Hybrid search catches exact keyword matches (resource kinds, flag names, error codes) that pure embedding similarity can miss.
 - **Responder** ([responder.py](app/agents/nodes/responder.py)) — synthesizes the final answer from retrieved context (or chat history for conversational turns), scoped to stay on-topic even if something slips past the guardrail gate.
 - **Memory** — LangGraph's `MemorySaver` checkpointer keeps per-`thread_id` conversation state across turns.
 - **Observability** — Pydantic Logfire instruments every span (guardrail checks, retrieval, reranking, LLM calls) end-to-end.
@@ -53,7 +53,7 @@ A user question is (1) screened by NeMo Guardrails for off-topic/jailbreak inten
 | Guardrails | NVIDIA NeMo Guardrails (Colang v1.0, embeddings-only dialog rails) |
 | LLM | Groq (`openai/gpt-oss-120b` for RAG, `openai/gpt-oss-20b` for the guardrail gate) |
 | Embeddings | Google Gemini (`gemini-embedding-2-preview`), with a local `sentence-transformers` fallback |
-| Vector DB | Qdrant (cosine similarity) |
+| Vector DB | Qdrant (hybrid: named dense vector, cosine similarity + named BM25 sparse vector, RRF fusion) |
 | Reranking | FlashRank (local ONNX cross-encoder, `ms-marco-MiniLM-L-6-v2`) |
 | Document parsing | `pypdf` / `pdfplumber` (PDF), BeautifulSoup (HTML), `unstructured` (DOCX/PPTX) |
 | Observability | Pydantic Logfire |
@@ -80,7 +80,8 @@ app/
 │   └── chunking/splitter.py      # Paragraph-based chunking (~1500 chars/chunk)
 └── services/retrieval/
     ├── embeddings.py             # Gemini embeddings w/ sentence-transformers fallback
-    ├── qdrant_service.py         # Qdrant client + query_points search
+    ├── sparse_embeddings.py      # Local BM25 sparse vectors (fastembed, Qdrant/bm25)
+    ├── qdrant_service.py         # Hybrid (dense + sparse) query_points search, RRF fusion
     └── ranking_service.py        # FlashRank reranker
 
 ui/app.py                        # Streamlit chat frontend ("Agent OS")
@@ -131,7 +132,9 @@ Pass `--wipe` to drop and recreate the Qdrant collection first:
 python -m app.ingestion.processor DATA --wipe
 ```
 
-Each processed file is parsed, chunked (~1500 chars/chunk), embedded, upserted into Qdrant, and also cached locally as JSON under `processed_data/<source_type>/<filename>.json`.
+Each processed file is parsed, chunked (~1500 chars/chunk), embedded (dense + BM25 sparse), upserted into Qdrant, and also cached locally as JSON under `processed_data/<source_type>/<filename>.json`.
+
+**Schema note:** the collection uses named vectors (`dense` + `sparse`) for hybrid search. A collection created before hybrid search was added uses the old single unnamed vector and is incompatible — run with `--wipe` once to recreate it under the new schema, or queries will fail closed (see "Known Limitations").
 
 ## Running
 
@@ -188,3 +191,4 @@ Requires `GROQ_API_KEY`, `GEMINI_API_KEY`, `QDRANT_API_KEY`, and `QDRANT_CLUSTER
 - `app/services/retrieval/embeddings.py` references the sentence-transformers fallback model as `all-mpbet-base-v2` — this is a typo (should be `all-mpnet-base-v2`) and will fail to load if Gemini is unreachable.
 - Groq's free tier caps `openai/gpt-oss-20b` at a low tokens-per-minute limit; guardrail checks can hit `429` rate-limit errors under moderate traffic.
 - `requirements.txt` includes `langfuse` (production tracing) and an LLM gateway (`portkey-ai`) with no corresponding code in the repo yet — these are unused dependencies reserved for future work. `ragas` is now wired up (see [Evaluation](#evaluation) below).
+- `qdrant_service.search_enterprise_knowledge` catches all exceptions and returns `[]` on any failure (schema mismatch, network error, auth failure), which the responder then answers around using its own general knowledge instead of retrieved context — a query against an un-migrated collection (see "Schema note" above) or an unreachable Qdrant cluster fails *silently* into an ungrounded answer rather than an error.

@@ -7,8 +7,9 @@ import logfire
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
-from app.config import settings
+from app.config import settings, DENSE_VECTOR_NAME, SPARSE_VECTOR_NAME
 from app.services.retrieval.embeddings import embed_texts, get_embedding_dim
+from app.services.retrieval.sparse_embeddings import embed_texts_sparse
 from app.ingestion.loaders.pdf import parse_pdf
 from app.ingestion.loaders.html import parse_html
 from app.ingestion.loaders.text import parse_text
@@ -76,17 +77,18 @@ def process_file(file_path: str, filename: str, source_type: str):
             
             with logfire.span("vectorizing & Indexing: "):
                 embeddings = embed_texts(chunks)
+                sparse_vectors = embed_texts_sparse(chunks)
                 points = [
                     models.PointStruct(
                         id = str(uuid.uuid4()),
-                        vector=vector,
+                        vector={DENSE_VECTOR_NAME: vector, SPARSE_VECTOR_NAME: sparse_vector},
                         payload={
                             "text":chunk,
                             "source":filename,
                             "source_type" : source_type,
                         },
                     )
-                    for chunk, vector in zip(chunks, embeddings)
+                    for chunk, vector, sparse_vector in zip(chunks, embeddings, sparse_vectors)
                 ]
                 qdrant_client.upsert(
                     collection_name=settings.QDRANT_COLLECTION,
@@ -120,19 +122,26 @@ def run_universal_ingestion(base_dir: str, explicit_source_type: str = None, wip
                     qdrant_client.delete_collection(settings.QDRANT_COLLECTION)
                     logfire.info(f"Collection '{settings.QDRANT_COLLECTION}' deleted.")
 
-        # Recreate collection — dimension resolved at runtime after embedding model probe
+        # Recreate collection — dimension resolved at runtime after embedding model probe.
+        # Named vectors: "dense" (semantic similarity) + "sparse" (BM25 lexical
+        # match), fused with RRF at query time for hybrid search.
         if not qdrant_client.collection_exists(settings.QDRANT_COLLECTION):
             dim = get_embedding_dim()
             qdrant_client.create_collection(
                 collection_name=settings.QDRANT_COLLECTION,
-                vectors_config=models.VectorParams(
-                    size=dim,
-                    distance=models.Distance.COSINE,
-                ),
+                vectors_config={
+                    DENSE_VECTOR_NAME: models.VectorParams(
+                        size=dim,
+                        distance=models.Distance.COSINE,
+                    ),
+                },
+                sparse_vectors_config={
+                    SPARSE_VECTOR_NAME: models.SparseVectorParams(),
+                },
             )
             logfire.info(
                 f"Created collection '{settings.QDRANT_COLLECTION}' "
-                f"({dim}-dim, Cosine)."
+                f"({dim}-dim dense + BM25 sparse, Cosine)."
             )
 
         
