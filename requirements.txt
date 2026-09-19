@@ -51,8 +51,13 @@ langchain-google-vertexai   # Required shim for NeMo Guardrails internal import 
 portkey-ai                  # Portkey Gateway for unified LLM routing, fallbacks & observability
 
 # --- EVALUATION (EVALS) ---
-ragas                       # RAG-specific evaluation metrics (Faithfulness, Relevancy, Recall)
-deepeval                    # Pytest-compatible test runner wrapping RAGAS & safety metrics
+# ragas has a known upstream bug: it unconditionally imports
+# langchain_community.chat_models.vertexai, which no longer exists in current
+# langchain-community releases (https://github.com/vibrantlabsai/ragas/issues/2745).
+# tests/conftest.py shims that module back in before ragas is imported.
+ragas                       # RAG-specific evaluation metrics (Faithfulness, Relevancy, Recall) — see tests/
+pytest                      # Test runner for tests/test_rag_eval.py
+langchain-ollama            # Local RAGAS judge LLM/embeddings (qwen2.5, nomic-embed-text) — avoids Groq quota
 langfuse                    # Live production monitoring, tracing & user feedback collection
 
 # --- EMBEDDINGS (SENTENCE TRANSFORMERS) ---

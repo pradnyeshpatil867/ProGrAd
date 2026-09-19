@@ -1,0 +1,45 @@
+name: RAG Eval
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  ragas-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Ollama and pull judge models
+        # The RAGAS judge (scores the agent's answers) runs locally via Ollama
+        # instead of Groq/Gemini — judging makes ~3x the LLM calls of the
+        # agent runs themselves, enough on its own to exhaust Groq's
+        # free-tier daily token quota. See tests/test_rag_eval.py docstring.
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          for i in $(seq 1 30); do curl -s http://localhost:11434 >/dev/null && break; sleep 1; done
+          ollama pull qwen2.5:7b-instruct
+          ollama pull nomic-embed-text
+
+      - name: Run RAGAS regression suite
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          QDRANT_CLUSTER_ENDPOINT: ${{ secrets.QDRANT_CLUSTER_ENDPOINT }}
+        # Queries the Qdrant collection as-is — this checks retrieval/generation
+        # quality against DATA/true_data, it does not (re)ingest it. Run
+        # `python -m app.ingestion.processor DATA` against the target cluster
+        # first if the collection is empty.
+        run: pytest tests/test_rag_eval.py -v -s

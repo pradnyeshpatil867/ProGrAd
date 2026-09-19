@@ -169,8 +169,22 @@ curl -X POST http://localhost:8000/query \
 
 Off-topic and jailbreak detection ([colang_rules.py](app/guardrails/colang_rules.py)) uses **embeddings-only** intent matching — the raw query is compared by embedding similarity directly against example utterances (no LLM freeform generation involved), which is deliberately more reliable than letting a reasoning-tuned LLM try to complete a few-shot canonical-form pattern. Anything that doesn't match a known category falls through to the LangGraph pipeline, whose responder is itself scoped to refuse off-topic requests as a second line of defense.
 
+## Evaluation
+
+A RAGAS regression suite ([tests/test_rag_eval.py](tests/test_rag_eval.py)) runs a golden set of Kubernetes Q&A pairs ([tests/eval_dataset.py](tests/eval_dataset.py), grounded in `DATA/true_data`) through the full agent and scores the results for **faithfulness**, **answer relevancy**, and **context recall**.
+
+The agent itself still runs on Groq/Gemini/Qdrant as usual, but the RAGAS *judge* (which scores the agent's answers) runs locally via [Ollama](https://ollama.ai) (`qwen2.5:7b-instruct` + `nomic-embed-text`) instead of an API — judging makes ~3x the LLM calls of the agent runs themselves and reprocesses the same long context blocks, which is enough on its own to exhaust Groq's free-tier daily token quota.
+
+```bash
+ollama pull qwen2.5:7b-instruct nomic-embed-text   # one-time
+ollama serve                                        # if not already running
+pytest tests/test_rag_eval.py -v -s
+```
+
+Requires `GROQ_API_KEY`, `GEMINI_API_KEY`, `QDRANT_API_KEY`, and `QDRANT_CLUSTER_ENDPOINT` for the agent, plus a running local Ollama instance for the judge. Assumes the target Qdrant collection is already populated (see [Ingesting Documents](#ingesting-documents) above) — the suite queries the existing index, it doesn't (re)ingest it. Runs automatically on push/PR via [.github/workflows/eval.yml](.github/workflows/eval.yml), which installs Ollama and pulls the judge models as part of the job.
+
 ## Known Limitations
 
 - `app/services/retrieval/embeddings.py` references the sentence-transformers fallback model as `all-mpbet-base-v2` — this is a typo (should be `all-mpnet-base-v2`) and will fail to load if Gemini is unreachable.
 - Groq's free tier caps `openai/gpt-oss-20b` at a low tokens-per-minute limit; guardrail checks can hit `429` rate-limit errors under moderate traffic.
-- `requirements.txt` includes evaluation tooling (`ragas`, `deepeval`, `langfuse`) and an LLM gateway (`portkey-ai`) with no corresponding code in the repo yet — these are unused dependencies reserved for future work.
+- `requirements.txt` includes `langfuse` (production tracing) and an LLM gateway (`portkey-ai`) with no corresponding code in the repo yet — these are unused dependencies reserved for future work. `ragas` is now wired up (see [Evaluation](#evaluation) below).
